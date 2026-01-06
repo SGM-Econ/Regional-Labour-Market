@@ -25,21 +25,18 @@
       <canvas id="chart" height="120"></canvas>
       <p id="status"></p>
 
-      <!-- Debug area (visible) to make it easy to inspect the raw response -->
       <h3>Raw response (first 2000 chars):</h3>
       <pre id="raw"></pre>
-      <p class="small">Open the browser console for more detailed logs (sample observation, parsing problems, etc.).</p>
+      <p class="small">Open the browser console for more detailed logs (why items were accepted/rejected).</p>
     </div>
 
     <script>
-      // ONS API address
       const ONS_URL =
         "https://api.beta.ons.gov.uk/v1/datasets/cpih01/editions/time-series/versions/6/observations?time=*&geography=K02000001&aggregate=cpih1dim1A0";
 
       const statusEl = document.getElementById("status");
       const rawEl = document.getElementById("raw");
 
-      // Robust getters for different shapes of the ONS response & observations
       function findObservations(root) {
         if (!root) return [];
         if (Array.isArray(root.observations)) return root.observations;
@@ -51,104 +48,77 @@
         return [];
       }
 
-      // Month name -> index map
-      const MONTHS = {
-        jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, sept:8, oct:9, nov:10, dec:11
-      };
+      // Basic month map for parsing labels like "May-04"
+      const MONTHS = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, sept:8, oct:9, nov:10, dec:11 };
 
-      // Extract time label from an observation, handling dims as array or object and case-insensitive keys
+      // Extract time label robustly, handling "Time" key and case variations
       function extractTimeLabel(o) {
         const dims = o.dimensions ?? o.dimension ?? {};
-        // If dims is an array, check for time-like entries
+        // If dims is object keyed by name (case may vary), check keys case-insensitively
+        if (!Array.isArray(dims) && typeof dims === 'object') {
+          for (const key of Object.keys(dims)) {
+            if (/^time$/i.test(key) || /^period$/i.test(key) || /^date$/i.test(key)) {
+              const td = dims[key];
+              if (td && (td.label || td.id)) return String(td.label ?? td.id);
+            }
+          }
+          // Specific check for "Time" capitalised (observed in your sample)
+          if (dims.Time && (dims.Time.label || dims.Time.id)) return String(dims.Time.label ?? dims.Time.id);
+          // fallback: scan values for label/id that look date-like
+          for (const v of Object.values(dims)) {
+            if (v && (v.label || v.id)) {
+              const s = String(v.label ?? v.id);
+              if (/\b[A-Za-z]{3,9}[- ]\d{2,4}\b/.test(s) || /^\d{4}[-/]\d{2}/.test(s)) return s;
+            }
+          }
+        }
+
+        // If dims is an array, look for time-like items
         if (Array.isArray(dims)) {
           for (const d of dims) {
             if (!d || typeof d !== 'object') continue;
             if ((d.name && /time|period|date/i.test(d.name)) || (d.id && /time|period|date/i.test(d.id))) {
               return d.option?.label ?? d.option?.id ?? d.label ?? d.id ?? "";
             }
-            // fallback: return label/id if it looks date-like
             const s = String(d.label ?? d.id ?? "");
-            if (s && dateLikeString(s)) return s;
-          }
-        } else {
-          // dims is an object keyed by dimension name (case can vary)
-          for (const key of Object.keys(dims)) {
-            if (/^time$/i.test(key) || /^period$/i.test(key) || /^date$/i.test(key)) {
-              const td = dims[key];
-              return td?.label ?? td?.id ?? "";
-            }
-          }
-          // fallback: find any dimension value whose id/label looks date-like
-          for (const v of Object.values(dims)) {
-            if (!v || typeof v !== 'object') continue;
-            const s = String(v.label ?? v.id ?? "");
-            if (s && dateLikeString(s)) return s;
+            if (s && (/\b[A-Za-z]{3,9}[- ]\d{2,4}\b/.test(s) || /^\d{4}[-/]\d{2}/.test(s))) return s;
           }
         }
 
-        // Other top-level fallbacks
-        const candidates = [o.time, o.date, o.period, o.observation?.time];
-        for (const c of candidates) {
-          if (c !== undefined && c !== null && String(c).trim() !== '') return String(c);
+        // Top-level fallbacks
+        for (const k of ['time','date','period']) {
+          if (o[k]) return String(o[k]);
         }
-
         return "";
       }
 
-      function dateLikeString(s) {
-        if (typeof s !== 'string') return false;
-        s = s.trim();
-        // examples: "May-04", "2004-05", "2004-05-01", "2020 Q1", "Q1 2020"
-        return /[A-Za-z]{3,9}[- ]\d{2,4}/.test(s) || /^\d{4}[-/]\d{2}(\b|$)/.test(s) || /\bQ[1-4]\b/.test(s) || /^\d{4}$/.test(s);
-      }
-
-      // Extract numeric value from an observation
       function extractValue(o) {
         const raw = o.observation ?? o.value ?? o.obs ?? o.datapoint ?? o.valueLabel;
         const num = Number(raw);
         return Number.isFinite(num) ? num : NaN;
       }
 
-      // Try to parse a label into a timestamp (ms) for sorting; returns NaN if not a date
+      // Try to parse label into timestamp for sorting; returns NaN if not a date
       function parseTimestamp(label) {
         if (typeof label !== 'string') return NaN;
         const s = label.trim();
-
-        // Match month-name + 2- or 4-digit year: "May-04" or "May-2004" or "May 04"
+        // match "May-04" etc.
         const m = s.match(/^([A-Za-z]{3,9})[- ](\d{2,4})$/);
         if (m) {
-          const monthName = m[1].toLowerCase();
-          const y = Number(m[2]);
-          const monthIdx = MONTHS[monthName.slice(0,3)];
+          const monthIdx = MONTHS[m[1].toLowerCase().slice(0,3)];
           if (monthIdx !== undefined) {
-            // two-digit year heuristic: 00-49 -> 2000-2049, 50-99 -> 1950-1999
-            const year = y < 100 ? (y <= 49 ? 2000 + y : 1900 + y) : y;
-            return Date.UTC(year, monthIdx, 1);
+            let y = Number(m[2]);
+            if (y < 100) y = y <= 49 ? 2000 + y : 1900 + y;
+            return Date.UTC(y, monthIdx, 1);
           }
         }
-
-        // Year-quarter like "2020 Q1" or "2020-Q1" or "Q1 2020"
-        const qmatch = s.match(/(\d{4}).*Q\s*([1-4])/i) || s.match(/Q\s*([1-4]).*(\d{4})/i);
-        if (qmatch) {
-          const year = Number(qmatch[1] || qmatch[2]);
-          const q = Number(qmatch[2] || qmatch[1]);
-          if (!Number.isNaN(year) && !Number.isNaN(q)) {
-            const month = (q - 1) * 3;
-            return Date.UTC(year, month, 1);
-          }
-        }
-
-        // ISO-ish parse (YYYY-MM or YYYY-MM-DD or "Apr 2004")
         const iso = Date.parse(s);
         if (!Number.isNaN(iso)) return iso;
-
-        // fallback: digits like YYYYMM or YYYYMMDD
         const digits = s.match(/^(\d{4})(\d{2})?(\d{2})?$/);
         if (digits) {
-          const y = Number(digits[1]), m2 = Number(digits[2] ?? '01'), d = Number(digits[3] ?? '01');
-          return Date.UTC(y, m2 - 1, d);
+          const y = Number(digits[1]), mm = Number(digits[2] ?? '01'), dd = Number(digits[3] ?? '01');
+          return Date.UTC(y, mm - 1, dd);
         }
-
         return NaN;
       }
 
@@ -156,80 +126,62 @@
         statusEl.textContent = "Loading data from ONS...";
         try {
           const res = await fetch(ONS_URL);
-
-          if (!res.ok) {
-            throw new Error("ONS request failed: " + res.status + " " + res.statusText);
-          }
-
+          if (!res.ok) throw new Error("ONS request failed: " + res.status + " " + res.statusText);
           const data = await res.json();
-
-          // Show a short preview of the raw response for debugging
           rawEl.textContent = JSON.stringify(data, null, 2).slice(0, 2000);
 
           const obs = findObservations(data);
-
+          console.log("Total observations found:", obs.length);
           if (!obs || obs.length === 0) {
-            console.error("No observations found in response. Full JSON:", data);
-            throw new Error("No observations returned. The API response structure may differ from expectations. See console for the returned JSON.");
+            console.error("No observations found. Full JSON:", data);
+            throw new Error("No observations returned. See console for the returned JSON.");
           }
 
-          console.log("Sample observation (obs[0]):", obs[0]);
+          // Map and collect diagnostics
+          const mapped = obs.map((o, idx) => {
+            const x = extractTimeLabel(o);
+            const y = extractValue(o);
+            return { idx, x, y, raw: o };
+          });
 
-          // Map observations into points with robust extractors
-          const points = obs
-            .map(o => {
-              const x = extractTimeLabel(o);
-              const y = extractValue(o);
-              return { x, y, raw: o };
-            })
-            .filter(p => p.x && Number.isFinite(p.y));
+          const accepted = mapped.filter(m => m.x && Number.isFinite(m.y));
+          const rejected = mapped.filter(m => !(m.x && Number.isFinite(m.y)));
 
-          if (points.length === 0) {
-            console.error("Parsed points array is empty. Sample obs[0]:", obs[0]);
-            throw new Error("Parsed no valid (time,value) points from observations. Check the response shape in the console.");
+          console.log("Accepted count:", accepted.length, "Rejected count:", rejected.length);
+          if (rejected.length > 0) {
+            console.log("First 6 rejected samples (idx,x,y,raw):", rejected.slice(0,6));
+          }
+          if (accepted.length > 0) {
+            console.log("First 6 accepted samples (idx,x,y,raw):", accepted.slice(0,6));
           }
 
-          // Sort points: prefer chronological if labels parse as dates, otherwise lexicographic
+          if (accepted.length === 0) {
+            console.error("Parsed points array is empty. Sample observation:", obs[0]);
+            throw new Error("Parsed no valid (time,value) points from observations. Check console for diagnostics above.");
+          }
+
+          // build points, sort
+          const points = accepted.map(a => ({ x: a.x, y: a.y }));
           points.sort((a, b) => {
             const ta = parseTimestamp(a.x);
             const tb = parseTimestamp(b.x);
             if (Number.isFinite(ta) && Number.isFinite(tb)) return ta - tb;
-            return a.x.localeCompare(b.x);
+            return String(a.x).localeCompare(String(b.x));
           });
 
-          // Draw the chart (use 2D context)
+          // draw chart
           const canvas = document.getElementById("chart");
           const ctx = canvas.getContext("2d");
-
-          // Destroy previous chart if re-running in same page (safety)
           if (window._onsChart instanceof Chart) {
             try { window._onsChart.destroy(); } catch (e) { /* ignore */ }
           }
-
           window._onsChart = new Chart(ctx, {
             type: "line",
             data: {
               labels: points.map(p => p.x),
-              datasets: [
-                {
-                  label: "ONS value",
-                  data: points.map(p => p.y),
-                  borderColor: "rgba(33, 150, 243, 1)",
-                  backgroundColor: "rgba(33, 150, 243, 0.12)",
-                  tension: 0.15,
-                  fill: true,
-                  pointRadius: 2
-                }
-              ]
+              datasets: [{ label: "ONS value", data: points.map(p => p.y), borderColor: "rgba(33,150,243,1)", backgroundColor: "rgba(33,150,243,0.12)", fill: true }]
             },
-            options: {
-              responsive: true,
-              interaction: { mode: "index", intersect: false },
-              scales: {
-                x: { display: true, title: { display: true, text: "Time" } },
-                y: { display: true, title: { display: true, text: "Value" } }
-              }
-            }
+            options: { responsive: true, interaction: { mode: "index", intersect: false } }
           });
 
           statusEl.textContent = "Loaded " + points.length + " points from ONS ✅";
@@ -239,7 +191,6 @@
         }
       }
 
-      // Run the loader
       run();
     </script>
   </body>
