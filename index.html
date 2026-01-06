@@ -30,8 +30,19 @@
       const ONS_URL =
         "https://api.beta.ons.gov.uk/v1/datasets/cpih01/editions/time-series/versions/6/observations?time=*&geography=K02000001&aggregate=cpih1dim1A0";
 
-      const statusEl = document.getElementById("status");
+      // Helper: ensure status element exists and return it
+      function ensureStatusEl() {
+        let el = document.getElementById('status');
+        if (!el) {
+          el = document.createElement('p');
+          el.id = 'status';
+          const container = document.querySelector('.wrap') || document.body;
+          container.appendChild(el);
+        }
+        return el;
+      }
 
+      // Helper: find observations regardless of response shape
       function findObservations(root) {
         if (!root) return [];
         if (Array.isArray(root.observations)) return root.observations;
@@ -108,29 +119,21 @@
         return NaN;
       }
 
+      // Run after DOM is ready
       async function run() {
-        if (!statusEl) {
-          // Defensive fallback if the status element is missing
-          console.warn("status element not found; creating one.");
-          const p = document.createElement('p');
-          p.id = 'status';
-          document.querySelector('.wrap')?.appendChild(p);
-        }
-        const status = document.getElementById('status');
-
+        const status = ensureStatusEl();
         status.textContent = "Loading data from ONS...";
+
         try {
           const res = await fetch(ONS_URL);
           if (!res.ok) throw new Error("ONS request failed: " + res.status + " " + res.statusText);
           const data = await res.json();
 
-          // Keep response visible only in console for debugging
-          console.log("Full ONS response (first observation):", findObservations(data)[0]);
+          console.log("Sample observation (for debugging):", findObservations(data)[0]);
 
           const obs = findObservations(data);
           console.log("Total observations found:", obs.length);
           if (!obs || obs.length === 0) {
-            console.error("No observations found. Full JSON:", data);
             throw new Error("No observations returned. See console for the returned JSON.");
           }
 
@@ -142,7 +145,7 @@
 
           const accepted = mapped.filter(m => m.x && Number.isFinite(m.y));
           if (accepted.length === 0) {
-            console.error("Parsed points array is empty. Sample observation:", obs[0]);
+            console.error("Accepted samples:", mapped.slice(0,6));
             throw new Error("Parsed no valid (time,value) points from observations. Check the console for diagnostics.");
           }
 
@@ -175,7 +178,7 @@
         }
       }
 
-      run();
+      document.addEventListener('DOMContentLoaded', run);
     </script>
   </body>
 </html>
