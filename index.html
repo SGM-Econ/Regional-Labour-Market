@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ONS Chart — LF24</title>
+    <title>ONS Chart</title>
 
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -11,123 +11,97 @@
     <style>
       body { font-family: Arial, sans-serif; margin: 24px; }
       .wrap { max-width: 900px; margin: 0 auto; }
+      .note { color: #444; }
+      pre { background:#f6f6f6; padding:12px; overflow:auto; max-height:320px; }
       .small { font-size:0.9rem; color:#666; margin-top:6px; }
-      table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-      th, td { padding: 8px 10px; border: 1px solid #e1e1e1; text-align: left; }
-      th { background: #f6f6f6; }
-      .table-wrap { margin-top: 12px; }
-      .muted { color: #666; font-size: 0.9rem; }
     </style>
   </head>
 
   <body>
     <div class="wrap">
-      <h1>ONS Series LF24 — Chart & last 12 observations</h1>
-      <p class="small muted">Charted series: LF24. Table shows the most recent 12 observations (latest first).</p>
+      <h1>ONS Regional Labour Market Data</h1>
+     <!-- <p class="note">If it says “Loaded points”, it worked.</p> -->
 
       <canvas id="chart" height="120"></canvas>
       <p id="status"></p>
 
-      <div class="table-wrap" id="table-wrap" aria-live="polite"></div>
-    </div>
-
+  <h3>Raw response (first 2000 chars):</h3>
+      <pre id="raw"></pre>
+      <p class="small">Open the browser console for more detailed logs (why items were accepted/rejected).</p>
+   
     <script>
-      // SERIES configuration
-      const SERIES_ID = "LF24";
-      // Correct ONS timeseries endpoint (not the datasets/v1 route)
-      const ONS_URL = `https://api.ons.gov.uk/timeseries/${encodeURIComponent(SERIES_ID)}/data`;
+      const ONS_URL =
+        "https://api.beta.ons.gov.uk/v1/datasets/cpih01/editions/time-series/versions/6/observations?time=*&geography=K02000001&aggregate=cpih1dim1A0";
 
-      // Ensure status element exists
-      function ensureStatusEl() {
-        let el = document.getElementById('status');
-        if (!el) {
-          el = document.createElement('p');
-          el.id = 'status';
-          const container = document.querySelector('.wrap') || document.body;
-          container.appendChild(el);
-        }
-        return el;
-      }
+      const statusEl = document.getElementById("status");
+      const rawEl = document.getElementById("raw");
 
-      // Helpers to parse/normalize responses from different ONS endpoints
       function findObservations(root) {
         if (!root) return [];
         if (Array.isArray(root.observations)) return root.observations;
         if (Array.isArray(root.data?.observations)) return root.data.observations;
         if (Array.isArray(root.result?.observations)) return root.result.observations;
         if (Array.isArray(root.items)) return root.items;
-        // If observations is an object keyed by date -> value object
-        if (root.observations && typeof root.observations === 'object') {
-          return Object.entries(root.observations).map(([k, v]) => {
-            // keep the key as possible time fallback
-            return Object.assign({ __key: k }, v);
-          });
-        }
-        // Some responses are keyed by date at top-level (rare)
-        // Fallback: if root has keys that look like dates mapping to numeric values
-        const maybe = Object.entries(root).filter(([k, v]) => (
-          (/^\d{4}(-\d{2})?$/).test(k) && (typeof v === 'object' || typeof v === 'string' || typeof v === 'number')
-        ));
-        if (maybe.length > 0) {
-          return maybe.map(([k, v]) => (typeof v === 'object' ? Object.assign({ __key: k }, v) : { __key: k, observation: v }));
-        }
+        const maybeObs = root.observations ?? root.data?.observations ?? root.result?.observations ?? root.items;
+        if (maybeObs && typeof maybeObs === 'object') return Object.values(maybeObs);
         return [];
       }
 
+      // Basic month map for parsing labels like "May-04"
       const MONTHS = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, sept:8, oct:9, nov:10, dec:11 };
 
+      // Extract time label robustly, handling "Time" key and case variations
       function extractTimeLabel(o) {
-        // Many ONS timeseries responses have a top-level 'date' or 'time' field, or the object key may be the date
-        if (o.date) return String(o.date);
-        if (o.time) return String(o.time);
-        if (o.period) return String(o.period);
-        if (o.__key) return String(o.__key);
-
-        // Legacy/dataset-like shape with dimensions object
         const dims = o.dimensions ?? o.dimension ?? {};
-        if (dims && typeof dims === 'object' && !Array.isArray(dims)) {
-          // check common keys case-insensitively
-          for (const k of Object.keys(dims)) {
-            if (/^time$/i.test(k) || /^period$/i.test(k) || /^date$/i.test(k)) {
-              const td = dims[k];
+        // If dims is object keyed by name (case may vary), check keys case-insensitively
+        if (!Array.isArray(dims) && typeof dims === 'object') {
+          for (const key of Object.keys(dims)) {
+            if (/^time$/i.test(key) || /^period$/i.test(key) || /^date$/i.test(key)) {
+              const td = dims[key];
               if (td && (td.label || td.id)) return String(td.label ?? td.id);
             }
           }
+          // Specific check for "Time" capitalised (observed in your sample)
           if (dims.Time && (dims.Time.label || dims.Time.id)) return String(dims.Time.label ?? dims.Time.id);
-          // fallback: scan values
+          // fallback: scan values for label/id that look date-like
           for (const v of Object.values(dims)) {
             if (v && (v.label || v.id)) {
               const s = String(v.label ?? v.id);
-              if (s) return s;
+              if (/\b[A-Za-z]{3,9}[- ]\d{2,4}\b/.test(s) || /^\d{4}[-/]\d{2}/.test(s)) return s;
             }
           }
         }
-        // If dims is array
+
+        // If dims is an array, look for time-like items
         if (Array.isArray(dims)) {
           for (const d of dims) {
             if (!d || typeof d !== 'object') continue;
-            if (d.option?.label) return String(d.option.label);
-            if (d.label) return String(d.label);
-            if (d.id) return String(d.id);
+            if ((d.name && /time|period|date/i.test(d.name)) || (d.id && /time|period|date/i.test(d.id))) {
+              return d.option?.label ?? d.option?.id ?? d.label ?? d.id ?? "";
+            }
+            const s = String(d.label ?? d.id ?? "");
+            if (s && (/\b[A-Za-z]{3,9}[- ]\d{2,4}\b/.test(s) || /^\d{4}[-/]\d{2}/.test(s))) return s;
           }
         }
 
+        // Top-level fallbacks
+        for (const k of ['time','date','period']) {
+          if (o[k]) return String(o[k]);
+        }
         return "";
       }
 
       function extractValue(o) {
-        // Common keys used in various ONS endpoints
-        const raw = o.observation ?? o.obs ?? o.value ?? o.obs_value ?? o.observation_value ?? o.valueLabel ?? o['value'];
+        const raw = o.observation ?? o.value ?? o.obs ?? o.datapoint ?? o.valueLabel;
         const num = Number(raw);
         return Number.isFinite(num) ? num : NaN;
       }
 
-      // Parse labels like "May-04", "2004-05", "2020 Q1" into timestamps
+      // Try to parse label into timestamp for sorting; returns NaN if not a date
       function parseTimestamp(label) {
         if (typeof label !== 'string') return NaN;
         const s = label.trim();
-
-        // Month-name + year like "May-04" or "May-2004"
+        // match "May-04" etc.
         const m = s.match(/^([A-Za-z]{3,9})[- ](\d{2,4})$/);
         if (m) {
           const monthIdx = MONTHS[m[1].toLowerCase().slice(0,3)];
@@ -137,141 +111,86 @@
             return Date.UTC(y, monthIdx, 1);
           }
         }
-
-        // Year-quarter like "2020 Q1" or "Q1 2020"
-        const qmatch = s.match(/(\d{4}).*Q\s*([1-4])/i) || s.match(/Q\s*([1-4]).*(\d{4})/i);
-        if (qmatch) {
-          const year = Number(qmatch[1] || qmatch[2]);
-          const q = Number(qmatch[2] || qmatch[1]);
-          if (!Number.isNaN(year) && !Number.isNaN(q)) {
-            return Date.UTC(year, (q - 1) * 3, 1);
-          }
-        }
-
-        // ISO parse (YYYY-MM or YYYY-MM-DD)
         const iso = Date.parse(s);
         if (!Number.isNaN(iso)) return iso;
-
-        // fallback digits like YYYYMM or YYYYMMDD
         const digits = s.match(/^(\d{4})(\d{2})?(\d{2})?$/);
         if (digits) {
-          const y = Number(digits[1]), m2 = Number(digits[2] ?? '01'), d = Number(digits[3] ?? '01');
-          return Date.UTC(y, m2 - 1, d);
+          const y = Number(digits[1]), mm = Number(digits[2] ?? '01'), dd = Number(digits[3] ?? '01');
+          return Date.UTC(y, mm - 1, dd);
         }
-
         return NaN;
       }
 
-      function renderRecentTable(points, count = 12) {
-        const wrap = document.getElementById('table-wrap');
-        wrap.innerHTML = '';
-
-        const header = document.createElement('h2');
-        header.textContent = `Last ${Math.min(count, points.length)} observations`;
-        wrap.appendChild(header);
-
-        const table = document.createElement('table');
-        table.setAttribute('aria-label', `Last ${count} observations for series ${SERIES_ID}`);
-
-        const thead = document.createElement('thead');
-        const trh = document.createElement('tr');
-        const thTime = document.createElement('th'); thTime.textContent = 'Time';
-        const thVal = document.createElement('th'); thVal.textContent = 'Value';
-        trh.appendChild(thTime); trh.appendChild(thVal);
-        thead.appendChild(trh);
-        table.appendChild(thead);
-
-        const tbody = document.createElement('tbody');
-
-        const last = points.slice(-count).reverse();
-        for (const p of last) {
-          const tr = document.createElement('tr');
-          const tdTime = document.createElement('td'); tdTime.textContent = p.x;
-          const tdVal = document.createElement('td'); tdVal.textContent = Number.isFinite(p.y) ? String(p.y) : '';
-          tr.appendChild(tdTime); tr.appendChild(tdVal);
-          tbody.appendChild(tr);
-        }
-
-        table.appendChild(tbody);
-        wrap.appendChild(table);
-      }
-
       async function run() {
-        const status = ensureStatusEl();
-        status.textContent = `Loading series ${SERIES_ID} from ONS...`;
-
+        statusEl.textContent = "Loading data from ONS...";
         try {
           const res = await fetch(ONS_URL);
           if (!res.ok) throw new Error("ONS request failed: " + res.status + " " + res.statusText);
           const data = await res.json();
+          rawEl.textContent = JSON.stringify(data, null, 2).slice(0, 2000);
 
-          // Normalize observations
-          const rawObs = findObservations(data);
-          if (!rawObs || rawObs.length === 0) {
+          const obs = findObservations(data);
+          console.log("Total observations found:", obs.length);
+          if (!obs || obs.length === 0) {
             console.error("No observations found. Full JSON:", data);
             throw new Error("No observations returned. See console for the returned JSON.");
           }
-          console.log(`Found ${rawObs.length} observations for ${SERIES_ID}. Sample:`, rawObs[0]);
 
-          // Build points
-          const pts = rawObs.map(o => {
+          // Map and collect diagnostics
+          const mapped = obs.map((o, idx) => {
             const x = extractTimeLabel(o);
             const y = extractValue(o);
-            return { x, y, raw: o };
-          }).filter(p => p.x && Number.isFinite(p.y));
+            return { idx, x, y, raw: o };
+          });
 
-          if (pts.length === 0) throw new Error("Parsed no valid (time,value) points from observations. Check console for diagnostics.");
+          const accepted = mapped.filter(m => m.x && Number.isFinite(m.y));
+          const rejected = mapped.filter(m => !(m.x && Number.isFinite(m.y)));
 
-          // Sort chronological (oldest -> newest)
-          pts.sort((a, b) => {
+          console.log("Accepted count:", accepted.length, "Rejected count:", rejected.length);
+          if (rejected.length > 0) {
+            console.log("First 6 rejected samples (idx,x,y,raw):", rejected.slice(0,6));
+          }
+          if (accepted.length > 0) {
+            console.log("First 6 accepted samples (idx,x,y,raw):", accepted.slice(0,6));
+          }
+
+          if (accepted.length === 0) {
+            console.error("Parsed points array is empty. Sample observation:", obs[0]);
+            throw new Error("Parsed no valid (time,value) points from observations. Check console for diagnostics above.");
+          }
+
+          // build points, sort
+          const points = accepted.map(a => ({ x: a.x, y: a.y }));
+          points.sort((a, b) => {
             const ta = parseTimestamp(a.x);
             const tb = parseTimestamp(b.x);
             if (Number.isFinite(ta) && Number.isFinite(tb)) return ta - tb;
             return String(a.x).localeCompare(String(b.x));
           });
 
-          // Chart
-          const canvas = document.getElementById('chart');
-          const ctx = canvas.getContext('2d');
+          // draw chart
+          const canvas = document.getElementById("chart");
+          const ctx = canvas.getContext("2d");
           if (window._onsChart instanceof Chart) {
             try { window._onsChart.destroy(); } catch (e) { /* ignore */ }
           }
           window._onsChart = new Chart(ctx, {
-            type: 'line',
+            type: "line",
             data: {
-              labels: pts.map(p => p.x),
-              datasets: [{
-                label: SERIES_ID,
-                data: pts.map(p => p.y),
-                borderColor: "rgba(33,150,243,1)",
-                backgroundColor: "rgba(33,150,243,0.12)",
-                tension: 0.15,
-                fill: true,
-                pointRadius: 2
-              }]
+              labels: points.map(p => p.x),
+              datasets: [{ label: "ONS value", data: points.map(p => p.y), borderColor: "rgba(33,150,243,1)", backgroundColor: "rgba(33,150,243,0.12)", fill: true }]
             },
-            options: {
-              responsive: true,
-              interaction: { mode: 'index', intersect: false },
-              scales: {
-                x: { display: true, title: { display: true, text: 'Time' } },
-                y: { display: true, title: { display: true, text: 'Value' } }
-              }
-            }
+            options: { responsive: true, interaction: { mode: "index", intersect: false } }
           });
 
-          status.textContent = `Loaded ${pts.length} points for ${SERIES_ID} ✅`;
-
-          // Table: last 12
-          renderRecentTable(pts, 12);
+          statusEl.textContent = "Loaded " + points.length + " points from ONS ✅";
         } catch (err) {
           console.error(err);
-          const status = ensureStatusEl();
-          status.textContent = "Error: " + err.message;
+          statusEl.textContent = "Error: " + err.message;
         }
       }
 
-      document.addEventListener('DOMContentLoaded', run);
+      run();
     </script>
   </body>
 </html>
