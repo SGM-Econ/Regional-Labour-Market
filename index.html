@@ -51,15 +51,22 @@
         }
 
         // 4) Convert observations into points {x, y}
-        const points = obs
-          .map(o => {
-            const dims = o.dimensions || [];
-            const timeDim = dims.find(d => d.name === "time");
-            const timeLabel = timeDim?.option?.label || timeDim?.option?.id || "";
-            const value = Number(o.observation);
-            return { x: timeLabel, y: value };
-          })
-          .filter(p => p.x && Number.isFinite(p.y));
+      const points = obs
+  .map(o => {
+    const dims = o.dimensions || {};
+
+    // Get time safely (works for ONS object-style dimensions)
+    const timeDim = dims.time;
+    const timeLabel =
+      timeDim?.option?.label ||
+      timeDim?.option?.id ||
+      "";
+
+    const value = Number(o.observation);
+    return { x: timeLabel, y: value };
+  })
+  .filter(p => p.x && Number.isFinite(p.y));
+        
 
         // 5) Sort points by time (so it draws left-to-right nicely)
         points.sort((a, b) => a.x.localeCompare(b.x));
