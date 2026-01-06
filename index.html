@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ONS Chart</title>
+    <title>ONS Chart — LF42</title>
 
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -13,23 +13,32 @@
       .wrap { max-width: 900px; margin: 0 auto; }
       .note { color: #444; }
       .small { font-size:0.9rem; color:#666; margin-top:6px; }
+      table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+      th, td { padding: 8px 10px; border: 1px solid #e1e1e1; text-align: left; }
+      th { background: #f6f6f6; }
+      .table-wrap { margin-top: 12px; }
+      .muted { color: #666; font-size: 0.9rem; }
     </style>
   </head>
 
   <body>
     <div class="wrap">
-      <h1>My ONS Chart</h1>
+      <h1>ONS Series LF42 — Chart & last 12 observations</h1>
+      <p class="small muted">Charted series: LF42. Table shows the most recent 12 observations (latest first).</p>
 
       <canvas id="chart" height="120"></canvas>
       <p id="status"></p>
-      <p class="small">Open the browser console for debugging output.</p>
+
+      <div class="table-wrap" id="table-wrap" aria-live="polite"></div>
     </div>
 
     <script>
-      const ONS_URL =
-        "https://api.beta.ons.gov.uk/v1/datasets/cpih01/editions/time-series/versions/6/observations?time=*&geography=K02000001&aggregate=cpih1dim1A0";
+      // SERIES configuration: change SERIES_ID to fetch another series
+      const SERIES_ID = "LF42";
+      // use 'versions/latest' to avoid hardcoding a version number
+      const ONS_URL = `https://api.beta.ons.gov.uk/v1/datasets/${encodeURIComponent(SERIES_ID)}/editions/time-series/versions/latest/observations?time=*`;
 
-      // Helper: ensure status element exists and return it
+      // Utility: ensure status element exists
       function ensureStatusEl() {
         let el = document.getElementById('status');
         if (!el) {
@@ -41,7 +50,7 @@
         return el;
       }
 
-      // Helper: find observations regardless of response shape
+      // Robust observation finder (handles arrays or keyed objects)
       function findObservations(root) {
         if (!root) return [];
         if (Array.isArray(root.observations)) return root.observations;
@@ -55,8 +64,10 @@
 
       const MONTHS = { jan:0, feb:1, mar:2, apr:3, may:4, jun:5, jul:6, aug:7, sep:8, sept:8, oct:9, nov:10, dec:11 };
 
+      // Extract time label: handle dims object/array and common alternate keys (Time, Period, etc.)
       function extractTimeLabel(o) {
         const dims = o.dimensions ?? o.dimension ?? {};
+        // If dims is an object keyed by name (case may differ)
         if (!Array.isArray(dims) && typeof dims === 'object') {
           for (const key of Object.keys(dims)) {
             if (/^time$/i.test(key) || /^period$/i.test(key) || /^date$/i.test(key)) {
@@ -64,7 +75,9 @@
               if (td && (td.label || td.id)) return String(td.label ?? td.id);
             }
           }
+          // Specific observed key "Time" (capital T) fallback
           if (dims.Time && (dims.Time.label || dims.Time.id)) return String(dims.Time.label ?? dims.Time.id);
+          // fallback: scan values for date-like label/id
           for (const v of Object.values(dims)) {
             if (v && (v.label || v.id)) {
               const s = String(v.label ?? v.id);
@@ -73,6 +86,7 @@
           }
         }
 
+        // If dims is an array
         if (Array.isArray(dims)) {
           for (const d of dims) {
             if (!d || typeof d !== 'object') continue;
@@ -84,21 +98,26 @@
           }
         }
 
+        // top-level fallbacks
         for (const k of ['time','date','period']) {
           if (o[k]) return String(o[k]);
         }
         return "";
       }
 
+      // Extract numeric observation value
       function extractValue(o) {
         const raw = o.observation ?? o.value ?? o.obs ?? o.datapoint ?? o.valueLabel;
         const num = Number(raw);
         return Number.isFinite(num) ? num : NaN;
       }
 
+      // Parse many time label formats into a timestamp for sorting
       function parseTimestamp(label) {
         if (typeof label !== 'string') return NaN;
         const s = label.trim();
+
+        // Month-name + year like "May-04" or "May-2004"
         const m = s.match(/^([A-Za-z]{3,9})[- ](\d{2,4})$/);
         if (m) {
           const monthIdx = MONTHS[m[1].toLowerCase().slice(0,3)];
@@ -108,71 +127,141 @@
             return Date.UTC(y, monthIdx, 1);
           }
         }
+
+        // Year-quarter like "2020 Q1" / "Q1 2020"
+        const qmatch = s.match(/(\d{4}).*Q\s*([1-4])/i) || s.match(/Q\s*([1-4]).*(\d{4})/i);
+        if (qmatch) {
+          const year = Number(qmatch[1] || qmatch[2]);
+          const q = Number(qmatch[2] || qmatch[1]);
+          if (!Number.isNaN(year) && !Number.isNaN(q)) {
+            return Date.UTC(year, (q - 1) * 3, 1);
+          }
+        }
+
+        // ISO-ish parse (YYYY-MM or YYYY-MM-DD or "Apr 2004")
         const iso = Date.parse(s);
         if (!Number.isNaN(iso)) return iso;
+
+        // fallback digits like YYYYMM or YYYYMMDD
         const digits = s.match(/^(\d{4})(\d{2})?(\d{2})?$/);
         if (digits) {
-          const y = Number(digits[1]), mm = Number(digits[2] ?? '01'), dd = Number(digits[3] ?? '01');
-          return Date.UTC(y, mm - 1, dd);
+          const y = Number(digits[1]), m2 = Number(digits[2] ?? '01'), d = Number(digits[3] ?? '01');
+          return Date.UTC(y, m2 - 1, d);
         }
+
         return NaN;
       }
 
-      // Run after DOM is ready
+      // Build and display table of most recent N observations (latest first)
+      function renderRecentTable(points, count = 12) {
+        const wrap = document.getElementById('table-wrap');
+        // clear previous
+        wrap.innerHTML = '';
+
+        const header = document.createElement('h2');
+        header.textContent = `Last ${Math.min(count, points.length)} observations`;
+        wrap.appendChild(header);
+
+        const table = document.createElement('table');
+        table.setAttribute('aria-label', `Last ${count} observations for series ${SERIES_ID}`);
+        const thead = document.createElement('thead');
+        const trh = document.createElement('tr');
+        const thTime = document.createElement('th'); thTime.textContent = 'Time';
+        const thVal = document.createElement('th'); thVal.textContent = 'Value';
+        trh.appendChild(thTime); trh.appendChild(thVal);
+        thead.appendChild(trh);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+
+        // points assumed sorted chronological ascending; take last count and show latest first
+        const last = points.slice(-count).reverse();
+        for (const p of last) {
+          const tr = document.createElement('tr');
+          const tdTime = document.createElement('td');
+          tdTime.textContent = p.x;
+          const tdVal = document.createElement('td');
+          tdVal.textContent = typeof p.y === 'number' ? String(p.y) : p.y;
+          tr.appendChild(tdTime);
+          tr.appendChild(tdVal);
+          tbody.appendChild(tr);
+        }
+
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+      }
+
+      // Main loader
       async function run() {
         const status = ensureStatusEl();
-        status.textContent = "Loading data from ONS...";
+        status.textContent = `Loading series ${SERIES_ID} from ONS...`;
 
         try {
           const res = await fetch(ONS_URL);
           if (!res.ok) throw new Error("ONS request failed: " + res.status + " " + res.statusText);
           const data = await res.json();
 
-          console.log("Sample observation (for debugging):", findObservations(data)[0]);
-
           const obs = findObservations(data);
-          console.log("Total observations found:", obs.length);
           if (!obs || obs.length === 0) {
+            console.error("No observations found. Full JSON:", data);
             throw new Error("No observations returned. See console for the returned JSON.");
           }
+          console.log(`Found ${obs.length} observations for ${SERIES_ID}. Sample:`, obs[0]);
 
-          const mapped = obs.map((o, idx) => {
+          // Map & filter
+          const pts = obs.map(o => {
             const x = extractTimeLabel(o);
             const y = extractValue(o);
-            return { idx, x, y, raw: o };
-          });
+            return { x, y, raw: o };
+          }).filter(p => p.x && Number.isFinite(p.y));
 
-          const accepted = mapped.filter(m => m.x && Number.isFinite(m.y));
-          if (accepted.length === 0) {
-            console.error("Accepted samples:", mapped.slice(0,6));
-            throw new Error("Parsed no valid (time,value) points from observations. Check the console for diagnostics.");
-          }
+          if (pts.length === 0) throw new Error("Parsed no valid (time,value) points from observations. Check the console for diagnostics.");
 
-          const points = accepted.map(a => ({ x: a.x, y: a.y }));
-          points.sort((a, b) => {
+          // Sort chronological (oldest -> newest) where possible
+          pts.sort((a, b) => {
             const ta = parseTimestamp(a.x);
             const tb = parseTimestamp(b.x);
             if (Number.isFinite(ta) && Number.isFinite(tb)) return ta - tb;
             return String(a.x).localeCompare(String(b.x));
           });
 
-          const canvas = document.getElementById("chart");
-          const ctx = canvas.getContext("2d");
+          // Draw Chart.js line chart
+          const canvas = document.getElementById('chart');
+          const ctx = canvas.getContext('2d');
           if (window._onsChart instanceof Chart) {
             try { window._onsChart.destroy(); } catch (e) { /* ignore */ }
           }
           window._onsChart = new Chart(ctx, {
-            type: "line",
+            type: 'line',
             data: {
-              labels: points.map(p => p.x),
-              datasets: [{ label: "ONS value", data: points.map(p => p.y), borderColor: "rgba(33,150,243,1)", backgroundColor: "rgba(33,150,243,0.12)", fill: true }]
+              labels: pts.map(p => p.x),
+              datasets: [{
+                label: SERIES_ID,
+                data: pts.map(p => p.y),
+                borderColor: "rgba(33,150,243,1)",
+                backgroundColor: "rgba(33,150,243,0.12)",
+                tension: 0.15,
+                fill: true,
+                pointRadius: 2
+              }]
             },
-            options: { responsive: true, interaction: { mode: "index", intersect: false } }
+            options: {
+              responsive: true,
+              interaction: { mode: 'index', intersect: false },
+              scales: {
+                x: { display: true, title: { display: true, text: 'Time' } },
+                y: { display: true, title: { display: true, text: 'Value' } }
+              }
+            }
           });
 
-          status.textContent = "Loaded " + points.length + " points from ONS ✅";
+          status.textContent = `Loaded ${pts.length} points for ${SERIES_ID} ✅`;
+
+          // Render last 12 observations in table (latest first)
+          renderRecentTable(pts, 12);
         } catch (err) {
           console.error(err);
+          const status = ensureStatusEl();
           status.textContent = "Error: " + err.message;
         }
       }
