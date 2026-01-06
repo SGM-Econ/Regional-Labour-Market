@@ -5,13 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>ONS Chart</title>
 
-    <!-- Chart.js makes charts easy -->
+    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <style>
       body { font-family: Arial, sans-serif; margin: 24px; }
       .wrap { max-width: 900px; margin: 0 auto; }
       .note { color: #444; }
+      pre { background:#f6f6f6; padding:12px; overflow:auto; }
     </style>
   </head>
 
@@ -22,81 +23,105 @@
 
       <canvas id="chart" height="120"></canvas>
       <p id="status"></p>
+
+      <!-- Debug area (visible) to make it easy to inspect the raw response -->
+      <h3>Raw response (first 2000 chars):</h3>
+      <pre id="raw"></pre>
     </div>
 
     <script>
-      // 1) This is the ONS API address we are reading from.
-      // You can swap this later for a different dataset.
+      // 1) ONS API address
       const ONS_URL =
         "https://api.beta.ons.gov.uk/v1/datasets/cpih01/editions/time-series/versions/6/observations?time=*&geography=K02000001&aggregate=cpih1dim1A0";
 
       const statusEl = document.getElementById("status");
+      const rawEl = document.getElementById("raw");
 
       async function run() {
         statusEl.textContent = "Loading data from ONS...";
+        try {
+          const res = await fetch(ONS_URL);
 
-        // 2) Download the data (JSON)
-        const res = await fetch(ONS_URL);
-
-        if (!res.ok) {
-          throw new Error("ONS request failed: " + res.status + " " + res.statusText);
-        }
-
-        const data = await res.json();
-
-        // 3) Get observations list
-        const obs = data.observations || [];
-        if (obs.length === 0) {
-          throw new Error("No observations returned. The API link might be wrong.");
-        }
-
-        // 4) Convert observations into points {x, y}
-      const points = obs
-  .map(o => {
-    const dims = o.dimensions || {};
-
-    // Get time safely (works for ONS object-style dimensions)
-    const timeDim = dims.time;
-    const timeLabel =
-      timeDim?.option?.label ||
-      timeDim?.option?.id ||
-      "";
-
-    const value = Number(o.observation);
-    return { x: timeLabel, y: value };
-  })
-  .filter(p => p.x && Number.isFinite(p.y));
-        
-
-        // 5) Sort points by time (so it draws left-to-right nicely)
-        points.sort((a, b) => a.x.localeCompare(b.x));
-
-        // 6) Draw the chart
-        const ctx = document.getElementById("chart");
-        new Chart(ctx, {
-          type: "line",
-          data: {
-            labels: points.map(p => p.x),
-            datasets: [
-              {
-                label: "ONS value",
-                data: points.map(p => p.y)
-              }
-            ]
-          },
-          options: {
-            responsive: true,
-            interaction: { mode: "index", intersect: false }
+          if (!res.ok) {
+            throw new Error("ONS request failed: " + res.status + " " + res.statusText);
           }
-        });
 
-        statusEl.textContent = "Loaded " + points.length + " points from ONS ✅";
+          const data = await res.json();
+
+          // Show a short preview of the raw response for debugging
+          rawEl.textContent = JSON.stringify(data, null, 2).slice(0, 2000);
+
+          // The ONS API sometimes returns observations as an object (keyed) or an array.
+          // Handle both shapes.
+          let rawObs = data.observations ?? data.data?.observations ?? data.result?.observations ?? {};
+          let obs = Array.isArray(rawObs) ? rawObs : Object.values(rawObs || {});
+
+          if (!obs || obs.length === 0) {
+            // If nothing found, output the full JSON into the console for inspection
+            console.error("No observations found in response. Full JSON:", data);
+            throw new Error("No observations returned. The API response structure may differ from expectations. See console for the returned JSON.");
+          }
+
+          // Convert observations into points {x, y}
+          const points = obs
+            .map(o => {
+              const dims = o.dimensions || {};
+
+              // time may be in different places depending on API version/format
+              const timeLabel =
+                dims.time?.option?.label ||
+                dims.time?.option?.id ||
+                o.time ||
+                o.date ||
+                o.observation?.time ||
+                "";
+
+              // value name may be 'observation' or something else; coerce to Number
+              const value = Number(o.observation ?? o.value ?? o.obs);
+              return { x: String(timeLabel), y: value };
+            })
+            .filter(p => p.x && Number.isFinite(p.y));
+
+          if (points.length === 0) {
+            console.error("Parsed points array is empty. Sample obs:", obs[0]);
+            throw new Error("Parsed no valid (time,value) points from observations. Check the response shape in the console.");
+          }
+
+          // Sort points by time label (lexicographic — OK for YYYY-MM strings)
+          points.sort((a, b) => a.x.localeCompare(b.x));
+
+          // Draw the chart (use 2D context)
+          const canvas = document.getElementById("chart");
+          const ctx = canvas.getContext("2d");
+          new Chart(ctx, {
+            type: "line",
+            data: {
+              labels: points.map(p => p.x),
+              datasets: [
+                {
+                  label: "ONS value",
+                  data: points.map(p => p.y),
+                  borderColor: "rgba(33, 150, 243, 1)",
+                  backgroundColor: "rgba(33, 150, 243, 0.1)",
+                  fill: true,
+                }
+              ]
+            },
+            options: {
+              responsive: true,
+              interaction: { mode: "index", intersect: false },
+              scales: { x: { display: true }, y: { display: true } }
+            }
+          });
+
+          statusEl.textContent = "Loaded " + points.length + " points from ONS ✅";
+        } catch (err) {
+          console.error(err);
+          statusEl.textContent = "Error: " + err.message;
+        }
       }
 
-      run().catch(err => {
-        console.error(err);
-        statusEl.textContent = "Error: " + err.message;
-      });
+      run();
     </script>
   </body>
 </html>
