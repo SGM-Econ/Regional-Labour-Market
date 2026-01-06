@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ONS Chart — LF42</title>
+    <title>ONS Chart — LF24</title>
 
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -22,8 +22,8 @@
 
   <body>
     <div class="wrap">
-      <h1>ONS Series LF42 — Chart & last 12 observations</h1>
-      <p class="small muted">Charted series: LF42. Table shows the most recent 12 observations (latest first).</p>
+      <h1>ONS Series LF24 — Chart & last 12 observations</h1>
+      <p class="small muted">Charted series: LF24. Table shows the most recent 12 observations (latest first).</p>
 
       <canvas id="chart" height="120"></canvas>
       <p id="status"></p>
@@ -33,7 +33,7 @@
 
     <script>
       // SERIES configuration
-      const SERIES_ID = "LF42";
+      const SERIES_ID = "LF24";
       // Correct ONS timeseries endpoint (not the datasets/v1 route)
       const ONS_URL = `https://api.ons.gov.uk/timeseries/${encodeURIComponent(SERIES_ID)}/data`;
 
