@@ -8,12 +8,25 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: update-nomis-xlsx
+  cancel-in-progress: true
+
 jobs:
   update:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Sync with origin/main
+        run: |
+          git fetch origin main
+          git checkout main
+          git reset --hard origin/main
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
@@ -21,7 +34,11 @@ jobs:
       - name: Download latest XLSX from Nomis
         run: |
           set -euo pipefail
-          URL=$(jq -r '.nomis_xlsx_url' config.json)
+          URL=$(jq -r '.nomis_xlsx_url // empty' config.json)
+          if [ -z "$URL" ]; then
+            echo "nomis_xlsx_url missing in config.json" >&2
+            exit 1
+          fi
           mkdir -p data
           curl -L --fail --retry 5 --retry-delay 2 \
             -o data/nomis_latest.xlsx \
