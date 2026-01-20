@@ -1,0 +1,47 @@
+name: Build clean data
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - "scripts/Data_Cleaning.R"
+      - ".github/workflows/build-clean-data.yml"
+  schedule:
+    - cron: "0 6 * * 2"  # Tuesdays 06:00 UTC (edit as you like)
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2
+
+      - name: Install R packages
+        uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          packages: |
+            any::httr
+            any::readxl
+            any::dplyr
+            any::stringr
+            any::janitor
+
+      - name: Run data cleaning
+        run: Rscript scripts/Data_Cleaning.R
+
+      - name: Commit and push clean data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "data/clean data.rds"
+          git diff --cached --quiet || git commit -m "Update clean data"
+          git push
