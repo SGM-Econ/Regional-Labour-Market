@@ -125,3 +125,15 @@ for (nm in region_names) {
 rm(list = intersect(c("Contents", "d", "df_combined", "df_hist", "df_latest", "df_out"), ls(envir = .GlobalEnv)),
    envir = .GlobalEnv)
 
+
+                              # Save combined clean data object to /data
+clean_data <- setNames(
+  lapply(region_names, function(nm) get(nm, envir = .GlobalEnv)),
+  region_names
+)
+
+if (!dir.exists("data")) dir.create("data", recursive = TRUE)
+
+saveRDS(clean_data, file.path("data", "clean data.rds"))
+
+
