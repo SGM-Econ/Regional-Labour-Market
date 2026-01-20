@@ -57,6 +57,12 @@ read_clean_sheet <- function(path, sheet) {
 sheets_latest_all <- excel_sheets(tmp_latest)
 sheets_hist_all   <- excel_sheets(tmp_hist)
 
+message("Latest sheets (all): ", paste(sheets_latest_all, collapse = " | "))
+message("Historic sheets (all): ", paste(sheets_hist_all, collapse = " | "))
+message("Latest usable count: ", length(sheets_latest_use))
+message("Historic usable count: ", length(sheets_hist_use))
+                             
+
 # Guardrails
 
 stopifnot(length(sheets_latest_all) >= 13)
@@ -135,5 +141,6 @@ clean_data <- setNames(
 if (!dir.exists("data")) dir.create("data", recursive = TRUE)
 
 saveRDS(clean_data, file.path("data", "clean data.rds"))
+
 
 
