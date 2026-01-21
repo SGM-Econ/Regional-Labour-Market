@@ -60,28 +60,21 @@ sheets_hist_all   <- excel_sheets(tmp_hist)
 
 message("Latest sheets (all): ", paste(sheets_latest_all, collapse = " | "))
 message("Historic sheets (all): ", paste(sheets_hist_all, collapse = " | "))
-message("Latest usable count: ", length(sheets_latest_use))
-message("Historic usable count: ", length(sheets_hist_use))
-                             
 
-# Guardrails
-
-stopifnot(length(sheets_latest_all) >= 13)
+stopifnot(length(sheets_latest_all) >= 14)
 stopifnot(length(sheets_hist_all) >= 14)
 
-# Latest: first 13 sheets
-
 latest_sheets_13 <- sheets_latest_all[2:14]
+hist_sheets_13   <- sheets_hist_all[2:14]
 
-# Historic: ignore first sheet (Contents), then take next 13 sheets
-
-hist_sheets_13 <- sheets_hist_all[2:14]
-
-# Map region -> sheet name in each workbook using the known orders
+message("Latest usable count: ", length(latest_sheets_13))
+message("Historic usable count: ", length(hist_sheets_13))
 
 latest_sheet_for_region <- setNames(latest_sheets_13, region_names)
-hist_sheet_for_region   <- setNames(hist_sheets_13, historic_order)
 
+hist_sheet_for_region <- setNames(rep(NA_character_, length(region_names)), region_names)
+hist_sheet_for_region[historic_order] <- hist_sheets_13
+                              
 # Import, append latest onto historic, assign into Global Env using region_names
 
 for (reg in region_names) {
